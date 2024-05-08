@@ -1,8 +1,6 @@
 import pulp
-from pulp.apis import PULP_CBC_CMD
 from graph import Graph
 from mkdir_path import *
-import pdb
 import time
 expanding_factor = 3
 
@@ -76,29 +74,29 @@ class SDCSolver(object):
 		end_time = time.time()
 		self.time = end_time - begin_time
 		out_file = open("./Test/test_dfg_%d_sdc.sol" % file_num,"w")
-		max_cstep = 0
+		max_CLK = 0
 		MUL_list = [0] * (g.getConstrainedL() + 1)
 		ALU_list = [0] * (g.getConstrainedL() + 1)
 		print("Initialize FU lists!")
 		for v in sorted(prob.variables(),key=lambda x: int(x.name.split("_")[1]) if len(x.name.split("_")) != 1 else 0):
 			if v.name[0] == "x":
 				op = int(v.name.split("_")[1])
-				cstep = int(v.varValue)
-				self.schedule[op] = cstep
-				#print("Operation:", op, " is scheduled in ", cstep, "varValue=", v.varValue)
+				CLK = int(v.varValue)
+				self.schedule[op] = CLK
+				#print("Operation:", op, " is scheduled in ", CLK, "varValue=", v.varValue)
 				delay = g.adjlist[op].delay
 				if g.mapR(g.adjlist[op].type) == "MUL":
-					for t in range(cstep,cstep+delay):
+					for t in range(CLK,CLK+delay):
 						MUL_list[t] += 1
 						#print("Operation:", op, " is a MUL and occupies cycle ", t)
 				if g.mapR(g.adjlist[op].type) == "ALU":
-					for t in range(cstep,cstep+delay):
+					for t in range(CLK,CLK+delay):
 						ALU_list[t] += 1
 						#print("Operation:", op, " is a ALU and occupies cycle ", t)
-				out_file.write("%s op/cstep %s\n" % (op,cstep))
-				max_cstep = max(max_cstep, cstep)
+				out_file.write("%s op/CLK %s\n" % (op,CLK))
+				max_CLK = max(max_CLK, CLK)
 		print("Done!")
-		self.TotLatency = max_cstep
+		self.TotLatency = max_CLK
 		#print("TotLatency=", self.TotLatency, "Latency=", prob.variablesDict()["MaxLatency"].varValue)
 		self.MUL = max(MUL_list)
 		self.ALU = max(ALU_list)

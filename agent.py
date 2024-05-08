@@ -1,13 +1,11 @@
 import torch
-import torch.nn as nn
 import torch.optim as optim
-import torch.nn.functional as F
-from torch.distributions import Categorical
 from torch.autograd import Variable
-from torch.distributions import Normal
 import numpy as np
-import random, math, time
+import math
 from policy import Policy
+from mkdir_path import *
+mkdir_path("Networks")
 
 class Agent(object):
 	def __init__(self, policy_network="", device="",lr=5e-4):
@@ -89,7 +87,7 @@ class Agent(object):
 			rewards = rewards - avg_reward # minus baseline
 			#print(f'normalized rewards: {rewards}')
 			loss = torch.Tensor([0]).float().to(self.device)
-			for step, (log_prob, reward, entropy) in enumerate(zip(log_probs,rewards,entropies)):
+			for CLK, (log_prob, reward, entropy) in enumerate(zip(log_probs,rewards,entropies)):
 				loss += -1 * log_prob * reward - 0.001 * entropy
 			tot_loss.append(loss)
 		# backpropagate

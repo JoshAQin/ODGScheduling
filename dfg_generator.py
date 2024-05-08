@@ -1,4 +1,3 @@
-from graph import Graph
 import random
 from mkdir_path import *
 mkdir_path("DFG")
@@ -37,13 +36,13 @@ class DFGGen(object):
 			else:
 				typename = "add"
 			res += "    %d [ label = %s ];\n" % (i, typename)
-		for (step,edge) in enumerate(edges):
-			res += "    %d -> %d [ name = %d ];\n" % (edge[0],edge[1],step)
+		for (CLK,edge) in enumerate(edges):
+			res += "    %d -> %d [ name = %d ];\n" % (edge[0],edge[1],CLK)
 		res += "}\n"
 		if istest=='No|no|n':
 			output = open("./DFG/DFG_" + str(num) + ".dot","w")
 			istest = False
-		else if istest=='Yes|yes|y':
+		elif istest=='Yes|yes|y':
 			output = open("./Test/DFG/test_DFG_" + str(num) + ".dot","w")
 			istest = True
 		else:
@@ -56,7 +55,7 @@ if istest==False:
 		DFGGen(i,tot_node=random.randint(100,1000),mul_rate=random.uniform(0.3,0.5))
 		if i % 100 == 0:
 			print("Generated %d / %d DFGs." % (i,NUM_GRAPH))
-else if istest==True:
+elif istest==True:
 	for i in range(0,10):
 		DFGGen(i+1,tot_node=300,mul_rate=random.uniform(0.3,0.5))
 		print("Generated %d / %d test DFGs." % (i+1,20))

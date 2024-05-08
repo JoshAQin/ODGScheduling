@@ -3,12 +3,15 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 import torch_geometric.data as gdata
-from math import ceil
+from math import ceil, pow, log10
 from logger import LogHandler
 from graph import Graph
 from agent import Agent
 from ilp_solver import ILPSolver
 from sdc_solver import SDCSolver
+from mkdir_path import *
+mkdir_path("Log")
+mkdir_path("Loss")
 
 parser = argparse.ArgumentParser(description="ODG-Based HLS Scheduler")
 parser.add_argument("--mode", type=int, default=0, help="Scheduling mode: Training (-1), Multi-DFG (0), or Single-DFG (test_file_idx) mode? (default: 0)")
@@ -23,7 +26,7 @@ parser.add_argument("--input_graphs", type=int, default=2000, help="Number of tr
 parser.add_argument("--batch_size", type=int, default=2, help="Batch size (default: 2)")
 parser.add_argument("--learning_rate", type=float, default=1e-3, help="Learning rate (default: 1e-3)")
 parser.add_argument("--null_reward", type=int, default=-5, help="Reward of a failed schedule (default: -5)")
-parser.add_argument("--stop_factor", type=int, default=15, help="Early stop factor in scheduling  (default: 15)")
+parser.add_argument("--comparison_factor", type=int, default=5, help="Comparison factor for performance-based early stop in scheduling  (default: 5)")
 
 args = parser.parse_args()
 
@@ -76,7 +79,7 @@ def train(episode): # Monte Carlo REINFORCE
 			y=torch.tensor([0], dtype=torch.long)
 			batch=torch.tensor([0], dtype=torch.long)
 		
-			# A full trajectory \tau
+			# A full trajectory tau
 			for timestep in range(args.timesteps):
 				g_data=gdata.Data(x=torch.tensor(graph.vertex_attributes, dtype=torch.float),\
 				edge_index=torch.tensor(graph.edge_index, dtype=torch.long),\
@@ -91,27 +94,27 @@ def train(episode): # Monte Carlo REINFORCE
 				action, log_prob, entropy = agent.get_action(g_data,legalMove)
 				if action > -1 * graph.vertex and action < 0:
 					node = -1 * action
-					cstep = graph.adjlist[node].cstep - 1
+					CLK = graph.adjlist[node].CLK_start - 1
 				elif action >= 0 and action < graph.vertex:
 					node = action
-					cstep = graph.adjlist[node].cstep + 1
+					CLK = graph.adjlist[node].CLK_start + 1
 				else:#invalid
 					node = action
-					cstep = 0
+					CLK = 0
 
 				if graph.adjlist[node].vertex_attribute[6] > 10:
 					action, log_prob, entropy = agent.get_action(g_data,legalMove,reschedule=True)
 					if action > -1 * graph.vertex and action < 0:
 						node = -1 * action
-						cstep = graph.adjlist[node].cstep - 1
+						CLK = graph.adjlist[node].CLK_start - 1
 					elif action >= 0 and action < graph.vertex:
 						node = action
-						cstep = graph.adjlist[node].cstep + 1
+						CLK = graph.adjlist[node].CLK_start + 1
 					else:#invalid
 						node = action
-						cstep = 0
+						CLK = 0
 
-				fes, reward, isbest = graph.schedule_node(node, cstep)
+				fes, reward, isbest = graph.schedule_node(node, CLK)
 
 				log_probs.append(log_prob)
 				rewards.append(reward)
@@ -192,8 +195,8 @@ def test(file_num):
 		for line in sol:
 			i = i + 1
 			if(i < count - 1):
-				op, cstep = map(int,line.split(" op/cstep "))
-				ops[op] = cstep
+				op, CLK = map(int,line.split(" op/CLK "))
+				ops[op] = CLK
 			elif(i == count - 1):
 				MUL_ILP, ALU_ILP = map(int,line.split(" MUL/ALU "))
 			else:
@@ -223,8 +226,8 @@ def test(file_num):
 		for line in sol:
 			i = i + 1
 			if(i < count - 1):
-				op, cstep = map(int,line.split(" op/cstep "))
-				ops[op] = cstep
+				op, CLK = map(int,line.split(" op/CLK "))
+				ops[op] = CLK
 			elif(i == count - 1):
 				MUL_SDC, ALU_SDC = map(int,line.split(" MUL/ALU "))
 			else:
@@ -273,25 +276,25 @@ def test(file_num):
 		action, log_prob, entropy = agent.get_action(g_data, legalMove)
 		if action > -1 * graph.vertex and action < 0:
 			node = -1 * action
-			cstep = graph.adjlist[node].cstep - 1
+			CLK = graph.adjlist[node].CLK_start - 1
 		elif action >= 0 and action < graph.vertex:
 			node = action
-			cstep = graph.adjlist[node].cstep + 1
+			CLK = graph.adjlist[node].CLK_start + 1
 		else: #invalid
 			node = action
-			cstep = 0
+			CLK = 0
 		if graph.adjlist[node].vertex_attribute[6] > 10:
 			action, _, _ = agent.get_action(g_data, legalMove, reschedule=True)
 			if action > -1 * graph.vertex and action < 0:
 				node = -1 * action
-				cstep = graph.adjlist[node].cstep - 1
+				CLK = graph.adjlist[node].CLK_start - 1
 			elif action >= 0 and action < graph.vertex:
 				node = action
-				cstep = graph.adjlist[node].cstep + 1
+				CLK = graph.adjlist[node].CLK_start + 1
 			else: #invalid
 				node = action
-				cstep = 0
-		fes, _, _ = graph.schedule_node(node, cstep)
+				CLK = 0
+		fes, _, _ = graph.schedule_node(node, CLK)
 
 		if fes == False:
 			fail_num += 1
@@ -299,8 +302,8 @@ def test(file_num):
 				print("Timestep %d: op %d exceed max idx, not available!" % (timestep+1,action))
 		else:
 			if timestep % graph.vertex == 0:
-				#print("Timestep %d: op %d move to %d, reward: %f" % (timestep+1,action,graph.adjlist[action].cstep,reward))
-				print("Timestep %d: Resource: %d, Latency: %d" % (timestep+1, graph.currNr["MUL"] + graph.currNr["ALU"], graph.get_totLatency()))
+				#print(f'Timestep {int(timestep/graph.vertex)}n: reschedule op {action} to CLK {graph.adjlist[action].CLK_start}')
+				print(f'Timestep {int(timestep/graph.vertex)}n: Resource: {graph.bestNr["MUL"] + graph.bestNr["ALU"]}, Latency: {graph.get_finalLatency()}')
 			step.append(timestep+1)
 			nrt.append(graph.currNr["MUL"])
 			nrta.append(graph.currNr["ALU"])
@@ -311,18 +314,20 @@ def test(file_num):
 		if fail_num > max_fail_num:
 			print(f'Exceed failure tolerance! Early stop at Timestep {timestep}/{iter}!')
 			break
-		ODG_best_consumption = graph.bestNr["MUL"] + graph.bestNr["ALU"] + graph.get_finalLatency()
 		ODG_curr_consumption = graph.currNr["MUL"] + graph.currNr["ALU"] + graph.get_totLatency()
-		comparison_factor = int(args.stop_factor / 3)
-		cum_num = comparison_factor * graph.vertex
+		ASAP_resource_consumption = MUL_ASAP + ALU_ASAP
+		ODG_resource_consumption = graph.bestNr["MUL"] + graph.bestNr["ALU"]
+		stop_factor = pow(10, ceil(log10(graph.vertex)) - 3)
+		stop_step = args.comparison_factor * stop_factor * graph.vertex
+		cum_num = args.comparison_factor * graph.vertex
 		cum_consumption = 0 if timestep % cum_num == 0 else cum_consumption + ODG_curr_consumption
 		if timestep % cum_num == cum_num - 1:
 			temp_consumption.append(cum_consumption/float(cum_num))
 		
-		if timestep >= cum_num:
-			if ODG_curr_consumption > ASAP_consumption and ASAP_consumption - ODG_best_consumption < 3:
+		if timestep >= stop_step:
+			if ODG_curr_consumption > ASAP_consumption and ASAP_resource_consumption - ODG_resource_consumption < 3:
 				early_stop_flag = True
-			elif timestep >= args.stop_factor * graph.vertex and \
+			elif timestep >= 3 * cum_num and \
 				temp_consumption[-1] >= temp_consumption[-2] and temp_consumption[-2] >= temp_consumption[-3]:
 				early_stop_flag = True
 			if early_stop_flag:

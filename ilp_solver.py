@@ -1,8 +1,8 @@
 import pulp, time
-from pulp.apis import PULP_CBC_CMD
 from graph import Graph
 from mkdir_path import *
 mkdir_path("ILP_formulation")
+mkdir_path("Sol")
 
 class ILPSolver(object):
 	def __init__(self, file_num, mul_delay=2, lf=1.0, constrained_MUL=0, constrained_ALU=0, istestfile=0):
@@ -75,15 +75,15 @@ class ILPSolver(object):
 			out_file = open("./Sol/dfg_%d.sol" % file_num,"w")
 		else:
 			out_file = open("./Test/test_dfg_%d.sol" % file_num,"w")
-		max_cstep = 0
+		max_CLK = 0
 		for v in sorted(prob.variables(),key=lambda x: int(x.name.split("_")[1]) if len(x.name.split("_")) != 1 else 0):
 			if v.name[0] == "x" and v.varValue == 1:
 				op = v.name.split("_")[1]
-				cstep = v.name.split("_")[-1]
-				self.schedule[int(op)] = int(cstep)
-				out_file.write("%s op/cstep %s\n" % (op,cstep))
-				max_cstep = max(max_cstep, int(cstep))
-		self.TotLatency = max_cstep + 1
+				CLK = v.name.split("_")[-1]
+				self.schedule[int(op)] = int(CLK)
+				out_file.write("%s op/CLK %s\n" % (op,CLK))
+				max_CLK = max(max_CLK, int(CLK))
+		self.TotLatency = max_CLK + 1
 		LatVal = prob.variablesDict()["MaxLatency"].varValue
 		Equal = self.TotLatency == LatVal
 		print("TotLatency = %d / %d, Equal? %d\n\n" %(self.TotLatency, LatVal, Equal))

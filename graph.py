@@ -1,7 +1,6 @@
-import re, sys
+import re,copy
 import numpy as np
 from node import Node
-import pdb
 
 class Graph(object):
 	def __init__(self, mul=2):
@@ -20,8 +19,8 @@ class Graph(object):
 		self.numScheduledOp = 0
 		# attr_mat[0]: Current schedule
 		# attr_mat[1]: Current possible move
-		# attr_mat[2]: All possible move
 		self.attr_mat = []
+		self.ODG = []
 		# reward and punishment
 		self.reward = dict()
 		self.reward["penalty"] = -1
@@ -36,6 +35,7 @@ class Graph(object):
 		self.last_schedule = -1
 		self.best = False
 		self.ODG_scheduling = False
+		self.CLK_op = []
 		
 
 	def setLatencyFactor(self,lc):
@@ -61,6 +61,13 @@ class Graph(object):
 		self.currNr = {"MUL":0, "ALU":0}
 		self.bestNr = {"MUL":0x3f3f3f, "ALU":0x3f3f3f}
 		self.nrt = {"MUL":np.array([0]*(self.CONSTRAINED_L+1)), "ALU":np.array([0]*(self.CONSTRAINED_L+1))}
+		
+		self.CLK_op = [ set() for _ in range(self.CONSTRAINED_L+1)]
+		self.ODG = np.zeros((self.vertex,self.vertex),dtype=int)
+		# initialize ODG with data dependencies
+		for i in range(self.vertex):
+			for j in self.adjlist[i].succ:
+				self.ODG[i,j] = 1
 
 	def read(self,infile):
 		# print("Begin parsing...")
@@ -175,23 +182,24 @@ class Graph(object):
 		for i in range(len(self.adjlist)):
 			self.adjlist[i].initial()
 
-		self.attr_mat = np.zeros((3,self.vertex,self.CONSTRAINED_L+1))
+		self.attr_mat = np.zeros((2,self.vertex,self.CONSTRAINED_L+1))
 		for i in range(self.vertex):
-			self.attr_mat[1:3,i,self.adjlist[i].getASAP():self.adjlist[i].getALAP() + self.adjlist[i].delay] = 1
+			self.attr_mat[1:2,i,self.adjlist[i].getASAP():self.adjlist[i].getALAP() + self.adjlist[i].delay] = 1
 		for i in range(self.vertex):
 			self.schedule_node(i,self.adjlist[i].getASAP(),mode=0)
 		#self.output_schedule()
+		self.CLK_op_bak = copy.deepcopy(self.CLK_op)
 
 	# mode = 0: initial schedule; mode = 1: reschedule
-	def schedule_node(self,op,step,mode=1):
+	def schedule_node(self,op,CLK,mode=1):
 		self.best = False
 		# if mode == 1:
-		# 	print(f'scheduling node {op} in cstep {step}')
+		# 	print(f'scheduling node {op} in CLK {CLK}')
 		if self.ODG_scheduling == True:
-			if not self.test_node_illegal(op,step):
+			if not self.test_node_illegal(op,CLK):
 				return True, self.reward["illegal"], self.best#skip this schedule and retry
 
-			if not self.test_val(op,step):
+			if not self.test_val(op,CLK):
 				self.adjlist[op].vertex_attribute[6]+=1
 				return True, self.reward["penalty"], self.best#skip this schedule and retry
 
@@ -201,122 +209,154 @@ class Graph(object):
 		reward = 0
 		tempR = self.mapR(self.adjlist[op].type)
 		tempNum = self.mapR(self.adjlist[op].type,1)
-		# remove old attr_mat
+		# modify attr_mat
 		oldOpNr = 0
-		for d in range(self.adjlist[op].delay):
-			oldOpNr += self.nrt[tempR][self.adjlist[op].cstep + d]
 		if mode == 1:
 			self.numScheduledOp += 1
+			# remove previous occupations for this operation
+			if CLK > self.adjlist[op].CLK_start:#next CLK
+				self.CLK_op[self.adjlist[op].CLK_start].remove(op)
+				self.CLK_op[CLK + self.adjlist[op].delay - 1].add(op)
+			elif CLK < self.adjlist[op].CLK_start:#prev CLK
+				self.CLK_op[self.adjlist[op].CLK_end].remove(op)
+				self.CLK_op[CLK].add(op)
 			for d in range(self.adjlist[op].delay):
-				# since the op initially placed here, so it should be at least WA
-				self.attr_mat[0,op,self.adjlist[op].cstep + d] = 0
-				self.nrt[tempR][self.adjlist[op].cstep + d] -= 1
-		# current operation
-		self.adjlist[op].schedule(step)
+				CLK_d = self.adjlist[op].CLK_start + d
+				# insert resource dependencies
+				reverse_flag = False
+				for share_op in self.CLK_op[CLK_d]:
+					if share_op != op:
+						if CLK > self.adjlist[op].CLK_start and \
+							self.adjlist[op].delay == 1:#next CLK
+							if self.ODG[op,share_op] == 0:
+								reverse_flag = False
+							else:
+								reverse_flag = True
+								self.ODG[op,share_op] = 0
+						if CLK < self.adjlist[op].CLK_start:#prev CLK
+							if self.ODG[share_op,op] == 0:
+								reverse_flag = False
+							else:
+								reverse_flag = True
+								self.ODG[share_op,op] = 0
+				if reverse_flag == False:
+					for share_op in self.CLK_op[CLK_d]:
+						if share_op != op:
+							if CLK > self.adjlist[op].CLK_start and \
+							self.adjlist[op].delay == 1:#next CLK
+								self.ODG[share_op,op] = 1
+							if CLK < self.adjlist[op].CLK_start:#prev CLK
+								self.ODG[op,share_op] = 1
+				oldOpNr += self.nrt[tempR][CLK_d]
+				# rollbacks
+				self.nrt[tempR][CLK_d] -= 1
+				self.attr_mat[0,op,CLK_d] = 0
+		# reschedule this operation
+		self.adjlist[op].schedule(CLK)
 		delay = self.adjlist[op].delay
+		if mode == 0:
+			for d in range(delay):
+				CLK_d = self.adjlist[op].CLK_start + d
+				self.CLK_op[CLK_d].add(op)
 		for d in range(delay):
-			self.nrt[tempR][step + d] += 1
-		self.attr_mat[0,op,step:step+delay] = 1
-		self.attr_mat[1,op,step:step+delay] = 0
-		self.attr_mat[1,op,self.adjlist[op].getASAP():step] = 1
-		self.attr_mat[1,op,step+delay:self.adjlist[op].getALAP()+delay] = 1
+			self.nrt[tempR][CLK + d] += 1
+		self.attr_mat[0,op,CLK:CLK+delay] = 1
+		self.attr_mat[1,op,CLK:CLK+delay] = 0
+		self.attr_mat[1,op,self.adjlist[op].getASAP():CLK] = 1
+		self.attr_mat[1,op,CLK+delay:self.adjlist[op].getALAP()+delay] = 1
 		# other influenced operations
 		for vpred in self.adjlist[op].pred:
 			tempALAP = self.adjlist[vpred].getALAP()
 			d = self.adjlist[vpred].delay
-			self.adjlist[vpred].setALAP(op,step - d)
+			self.adjlist[vpred].setALAP(op,CLK - d)
 			currALAP = self.adjlist[vpred].getALAP()
 			self.attr_mat[1,vpred,min(tempALAP,currALAP)+d:max(tempALAP,currALAP)+d] = 0 if currALAP < tempALAP else 1
 			if currALAP > tempALAP:
-				#print("small reward is %f" %self.reward["small"])
 				reward += self.reward["small"]
 		for vsucc in self.adjlist[op].succ:
 			tempASAP = self.adjlist[vsucc].getASAP()
-			self.adjlist[vsucc].setASAP(op,step + self.adjlist[op].delay)
+			self.adjlist[vsucc].setASAP(op,CLK + self.adjlist[op].delay)
 			currASAP = self.adjlist[vsucc].getASAP()
 			self.attr_mat[1,vsucc,min(tempASAP,currASAP):max(tempASAP,currASAP)] = 0 if currASAP > tempASAP else 1
 			if currASAP < tempASAP:
-				#print("small reward is %f" %self.reward["small"])
 				reward += self.reward["small"]
 
-		self.adjlist[op].vertex_attribute[5]=step
+		self.adjlist[op].vertex_attribute[5]=CLK
 		self.vertex_attributes=[]
 		for i in range(len(self.adjlist)):
 			self.adjlist[i].vertex_attribute[3] = self.adjlist[i].getASAP()
 			self.adjlist[i].vertex_attribute[4] = self.adjlist[i].getALAP()
-			#self.vertex_attributes[i] = self.adjlist[i].vertex_attribute
 			self.vertex_attributes.append(self.adjlist[i].vertex_attribute)
 		self.vertex_attributes=np.array(self.vertex_attributes)
 		
 		self.prev_totLatency = self.totLatency
-		self.totLatency = max(self.totLatency, step + self.adjlist[op].delay) # step start from 0
+		self.totLatency = max(self.totLatency, CLK + self.adjlist[op].delay)
 		oldNr = self.currNr[tempR]
 		self.currNr[tempR] = self.nrt[tempR].max()
-		if mode != 0:
+		if mode == 0:
+			self.bestNr["MUL"], self.bestNr["ALU"] = self.currNr["MUL"], self.currNr["ALU"]
+			self.finalLatency = self.totLatency
+			for v in range(self.vertex):
+				self.adjlist[v].scheduled_CLK = self.adjlist[v].CLK_start
+			self.best = True
+		else:
 			#print("Updating Nrs")
-			#if self.currNr["MUL"] != 0 and self.currNr["ALU"] != 0 and self.currNr["MUL"] + self.currNr["ALU"] <= self.bestNr["MUL"] + self.bestNr["ALU"]:
 			if self.currNr["MUL"] + self.currNr["ALU"] + self.totLatency <= self.bestNr["MUL"] + self.bestNr["ALU"] + self.finalLatency:
-				#print("Updating bestNrs")
 				self.bestNr["MUL"], self.bestNr["ALU"] = self.currNr["MUL"], self.currNr["ALU"]
 				self.finalLatency = self.totLatency
 				self.best = True
 				for op in range(self.vertex):
-					self.adjlist[op].final_cstep = self.adjlist[op].cstep
-		else:
-			self.bestNr["MUL"], self.bestNr["ALU"] = self.currNr["MUL"], self.currNr["ALU"]
-			self.finalLatency = self.totLatency
-			for v in range(self.vertex):
-				self.adjlist[v].final_cstep = self.adjlist[v].cstep
-			self.best = True
-		newOpNr = 0
-		for d in range(self.adjlist[op].delay):
-			newOpNr += self.nrt[tempR][self.adjlist[op].cstep + d]
-		# early stop
-		cnt = 0
-		legal_move = self.getLegalMove()[0]
-		for legal_op in legal_move:
-			legal_op = self.adjlist[legal_op]
-			typeR = self.mapR(legal_op.type)
-			if (self.nrt[typeR][legal_op.cstep+1:legal_op.cstep+1+legal_op.delay] + 1 \
-				> self.currNr[typeR]).any() and \
-				(self.nrt[typeR][legal_op.cstep-1:legal_op.cstep-1+legal_op.delay] + 1 \
-				> self.currNr[typeR]).any():
-				cnt += 1
-		if cnt >= len(legal_move):
-			return False, self.reward["ending"], self.best
-		# final reward
-		reward += oldNr - self.currNr[tempR]
-		reward += (oldOpNr - newOpNr)/self.adjlist[op].delay
-		reward += (self.prev_totLatency - self.totLatency)
+					self.adjlist[op].scheduled_CLK = self.adjlist[op].CLK_start
+			newOpNr = 0
+			for d in range(self.adjlist[op].delay):
+				newOpNr += self.nrt[tempR][self.adjlist[op].CLK_start + d]
+			# early stop
+			cnt = 0
+			legal_move = self.getLegalMove()[0]
+			for legal_op in legal_move:
+				legal_op = self.adjlist[legal_op]
+				typeR = self.mapR(legal_op.type)
+				# cnt when both forward and backward rescheduling improves resource usage
+				if (self.nrt[typeR][legal_op.CLK_start+1:legal_op.CLK_end+1] + 1 \
+					> self.currNr[typeR]).any() and \
+					(self.nrt[typeR][legal_op.CLK_start-1:legal_op.CLK_end-1] + 1 \
+					> self.currNr[typeR]).any():
+					cnt += 1
+			if cnt >= len(legal_move):
+				return False, self.reward["ending"], self.best
+			# final reward
+			reward += oldNr - self.currNr[tempR]
+			reward += (oldOpNr - newOpNr)/self.adjlist[op].delay
+			reward += (self.prev_totLatency - self.totLatency)
 		return True, reward, self.best
 
-	def test_node_illegal(self,op,step):
+	def test_node_illegal(self,op,CLK):
 		if op < 0 or op >= self.vertex:
 			#print("op %d exceed the num of vertex" %op)
 			return False
 		return True
 
-	def test_val(self,op,step):
+	def test_val(self,op,CLK):
 		# Latency Constraint
-		if step < 0 or step + self.adjlist[op].delay - 1 > self.CONSTRAINED_L:
+		if CLK < 0 or CLK + self.adjlist[op].delay - 1 > self.CONSTRAINED_L:
 			#print("op %d exceeds the constrained latency" %op)
 			return False
 		# Resource Constraint
 		tempR = self.mapR(self.adjlist[op].type)
-		if self.nrt[tempR][step] + 1 > self.maxNr[tempR]:
+		if self.nrt[tempR][CLK] + 1 > self.maxNr[tempR]:
 			#print("op %d exceeds the constrained resource" %op)
 			return False
 		# Data dependency Constraint
-		if step < self.adjlist[op].getASAP() or self.adjlist[op].getALAP() < step:
+		if CLK < self.adjlist[op].getASAP() or self.adjlist[op].getALAP() < CLK:
 			#print("op %d exceeds its available clock cycles" %op)
 			return False
 		for vsucc in self.adjlist[op].succ:
 			vsucc = self.adjlist[vsucc]
-			if vsucc.cstep > -1 and step + self.adjlist[op].delay - 1 >= vsucc.cstep:
+			if vsucc.CLK_start > -1 and CLK + self.adjlist[op].delay - 1 >= vsucc.CLK_start:
 				return False
 		for vpred in self.adjlist[op].pred:
 			vpred = self.adjlist[vpred]
-			if vpred.cstep > -1 and vpred.cstep + vpred.delay > step:
+			if vpred.CLK_start > -1 and vpred.CLK_end >= CLK:
 				return False
 		return True
 
@@ -325,7 +365,7 @@ class Graph(object):
 		for v in self.adjlist:
 			for vsucc in v.succ:
 				vsucc = self.adjlist[vsucc]
-				if v.cstep + v.delay - 1 >= vsucc.cstep:
+				if v.CLK_end >= vsucc.CLK_start:
 					flag = False
 					print("Schedule conflicts with Node %d(%s) and Node %d(%s)." % (v.num,v.name,vsucc.num,vsucc.name))
 					return flag
@@ -364,7 +404,7 @@ class Graph(object):
 	def output_schedule(self):
 		print("Schedule: ")
 		for v in self.adjlist:
-			print("Node %d(%s): %d" % (v.num,v.name,v.final_cstep))
+			print("Node %d(%s): %d" % (v.num,v.name,v.scheduled_CLK))
 
 	def output(self):
 		print("# of operations: %d" % self.vertex)
@@ -380,6 +420,9 @@ class Graph(object):
 
 	def get_finalLatency(self):
 		return self.finalLatency
+	
+	def get_ODG(self):
+		return self.ODG
 
 	def print_DFG_settings(self):
 		print("constrained_Latency:",self.getConstrainedL())
